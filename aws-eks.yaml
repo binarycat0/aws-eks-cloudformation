@@ -1,0 +1,40 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: EKS Cluster with Managed Node Group
+
+Parameters:
+  ClusterName:
+    Type: String
+    Default: my-eks-cluster
+
+Resources:
+
+  EKSCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: !Ref ClusterName
+      RoleArn: !ImportValue "MyStack-EKSClusterRoleArn"
+      ResourcesVpcConfig:
+        SubnetIds:  # Add your own subnet IDs here
+          - subnet-xxxxxxxx
+          - subnet-yyyyyyyy
+
+  NodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref ClusterName
+      NodeRole: !ImportValue "MyStack-EKSNodeRoleArn"
+      Subnets:
+        - subnet-xxxxxxxx
+        - subnet-yyyyyyyy
+      ScalingConfig:
+        DesiredSize: 2
+        MaxSize: 3
+        MinSize: 1
+      InstanceTypes:
+        - t3.medium
+
+Outputs:
+  ClusterName:
+    Value: !Ref ClusterName
+  ClusterArn:
+    Value: !GetAtt EKSCluster.Arn
