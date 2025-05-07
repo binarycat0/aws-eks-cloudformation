@@ -14,9 +14,13 @@ Resources:
       Name: !Ref ClusterName
       RoleArn: !ImportValue "MyStack-EKSClusterRoleArn"
       ResourcesVpcConfig:
-        SubnetIds:  # Add your own subnet IDs here
-          - subnet-xxxxxxxx
-          - subnet-yyyyyyyy
+        SecurityGroupIds:
+          - !ImportValue "MyStack-EKSSecurityGroupId"
+        SubnetIds:
+          - !ImportValue "MyStack-PublicSubnet1"
+          - !ImportValue "MyStack-PublicSubnet2"
+          - !ImportValue "MyStack-PrivateSubnet1"
+          - !ImportValue "MyStack-PrivateSubnet2"
 
   NodeGroup:
     Type: AWS::EKS::Nodegroup
@@ -24,8 +28,8 @@ Resources:
       ClusterName: !Ref ClusterName
       NodeRole: !ImportValue "MyStack-EKSNodeRoleArn"
       Subnets:
-        - subnet-xxxxxxxx
-        - subnet-yyyyyyyy
+        - !ImportValue "MyStack-PrivateSubnet1"
+        - !ImportValue "MyStack-PrivateSubnet2"
       ScalingConfig:
         DesiredSize: 2
         MaxSize: 3
