@@ -12,13 +12,18 @@ Resources:
     Type: AWS::EKS::Cluster
     Properties:
       Name: !Ref ClusterName
-      RoleArn: !ImportValue !Sub "${ClusterName}-EKSClusterRoleArn"
+      RoleArn:
+        Fn::ImportValue:
+          Fn::Sub: "${ClusterName}-EKSClusterRoleArn"
       ResourcesVpcConfig:
         SecurityGroupIds:
-          - !ImportValue !Sub "${ClusterName}-EKSSecurityGroupId"
+          - Fn::ImportValue:
+              Fn::Sub: "${ClusterName}-EKSSecurityGroupId"
         SubnetIds:
-          - !ImportValue !Sub "${ClusterName}-PublicSubnet1"
-          - !ImportValue !Sub "${ClusterName}-PrivateSubnet1"
+          - Fn::ImportValue:
+              Fn::Sub: "${ClusterName}-PublicSubnet1"
+          - Fn::ImportValue:
+              Fn::Sub: "${ClusterName}-PrivateSubnet1"
       Tags:
         - Key: Name
           Value: !Ref ClusterName
@@ -31,9 +36,12 @@ Resources:
     Type: AWS::EKS::Nodegroup
     Properties:
       ClusterName: !Ref EKSCluster
-      NodeRole: !ImportValue !Sub "${ClusterName}-EKSNodeRoleArn"
+      NodeRole:
+        Fn::ImportValue:
+          Fn::Sub: "${ClusterName}-EKSNodeRoleArn"
       Subnets:
-        - !ImportValue !Sub "${ClusterName}-PrivateSubnet1"
+        - Fn::ImportValue:
+            Fn::Sub: "${ClusterName}-PrivateSubnet1"
       ScalingConfig:
         DesiredSize: 1
         MaxSize: 2

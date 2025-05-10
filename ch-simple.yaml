@@ -75,10 +75,15 @@ Resources:
     Properties:
       InstanceType: !Ref InstanceType
       SecurityGroupIds:
-        - !ImportValue !Sub "${ClusterName}-ClickHouseSecurityGroupId"
+        - Fn::ImportValue:
+            Fn::Sub: "${ClusterName}-ClickHouseSecurityGroupId"
       ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMI]
-      SubnetId: !ImportValue !Sub "${ClusterName}-PrivateSubnet1"  # Using private subnet for EKS-only access
-      IamInstanceProfile: !ImportValue !Sub "${ClusterName}-ClickHouseInstanceProfileName"
+      SubnetId:
+        Fn::ImportValue:
+          Fn::Sub: "${ClusterName}-PrivateSubnet1"  # Using private subnet for EKS-only access
+      IamInstanceProfile:
+        Fn::ImportValue:
+          Fn::Sub: "${ClusterName}-ClickHouseInstanceProfileName"
       BlockDeviceMappings:
         - DeviceName: /dev/xvda
           Ebs:

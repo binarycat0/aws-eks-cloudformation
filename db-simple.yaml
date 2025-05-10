@@ -46,8 +46,10 @@ Resources:
     Properties:
       DBSubnetGroupDescription: "Subnet group for PostgreSQL RDS instance"
       SubnetIds:
-        - Fn::ImportValue: !Sub "${ClusterName}-PrivateSubnet1"
-        - Fn::ImportValue: !Sub "${ClusterName}-PublicSubnet1"  # Using public subnet as second subnet for demo
+        - Fn::ImportValue:
+            Fn::Sub: "${ClusterName}-PrivateSubnet1"
+        - Fn::ImportValue:
+            Fn::Sub: "${ClusterName}-PublicSubnet1"  # Using public subnet as second subnet for demo
       Tags:
         - Key: Name
           Value: !Sub "${ClusterName}-demo-db-subnet-group"
@@ -71,7 +73,8 @@ Resources:
       MasterUserPassword: !Join ['', ['{{resolve:secretsmanager:', !Ref DBPasswordSecret, ':SecretString:password}}' ]]
       DBSubnetGroupName: !Ref DBSubnetGroup
       VPCSecurityGroups:
-        - Fn::ImportValue: !Sub "${ClusterName}-PrivateSecurityGroupId"
+        - Fn::ImportValue:
+            Fn::Sub: "${ClusterName}-PrivateSecurityGroupId"
       BackupRetentionPeriod: 1  # Reduced for demo
       MultiAZ: false  # Disabled for demo
       PubliclyAccessible: false
