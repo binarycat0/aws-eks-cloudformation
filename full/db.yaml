@@ -1,0 +1,292 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "RDS PostgreSQL instance with generated password stored in SSM Parameter Store"
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment type for resource tagging
+  
+  ClusterName:
+    Type: String
+    Default: eks-cluster
+    Description: Name of the EKS cluster for resource tagging
+
+Resources:
+  # Generate a random password for the RDS instance
+  DBPasswordSecret:
+    Type: "AWS::SecretsManager::Secret"
+    Properties:
+      Name: !Sub "${ClusterName}-${Environment}-db-password"
+      Description: "Password for RDS PostgreSQL instance"
+      GenerateSecretString:
+        SecretStringTemplate: '{\"username\": \"postgres\"}'
+        GenerateStringKey: "password"
+        PasswordLength: 16
+        ExcludeCharacters: '\"@/\\'
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-${Environment}-db-password"
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Store the password in SSM Parameter Store
+  DBPasswordParameter:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: !Sub "/database/${ClusterName}/${Environment}/password"
+      Description: "Password for RDS PostgreSQL instance"
+      Type: "SecureString"
+      Value: !Join ['', ['{{resolve:secretsmanager:', !Ref DBPasswordSecret, ':SecretString:password}}' ]]
+      Tags:
+        Environment: !Ref Environment
+        ManagedBy: CloudFormation
+        ClusterName: !Ref ClusterName
+
+  # DB Subnet Group using the private subnets from the VPC stack
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: "Subnet group for PostgreSQL RDS instance"
+      SubnetIds:
+        - Fn::ImportValue: "MyStack-PrivateSubnet1"
+        - Fn::ImportValue: "MyStack-PrivateSubnet2"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-${Environment}-db-subnet-group"
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # CloudWatch Log Group for RDS
+  RDSLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/rds/instance/${ClusterName}-${Environment}-postgres"
+      RetentionInDays: 7
+      Tags:
+        Environment: !Ref Environment
+        ManagedBy: CloudFormation
+        ClusterName: !Ref ClusterName
+
+  # PostgreSQL RDS Instance
+  PostgreSQLInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub "${ClusterName}-${Environment}-postgres"
+      DBName: "appdb"
+      Engine: postgres
+      EngineVersion: "17.5"
+      DBInstanceClass: "db.t3.small"
+      AllocatedStorage: 20
+      StorageType: gp2
+      MasterUsername: "postgres"
+      MasterUserPassword: !Join ['', ['{{resolve:secretsmanager:', !Ref DBPasswordSecret, ':SecretString:password}}' ]]
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - Fn::ImportValue: "MyStack-PrivateSecurityGroupId"
+      BackupRetentionPeriod: 7
+      MultiAZ: true
+      PubliclyAccessible: false
+      StorageEncrypted: true
+      DeletionProtection: true
+      EnablePerformanceInsights: true
+      PerformanceInsightsRetentionPeriod: 7
+      MonitoringInterval: 60
+      EnableCloudwatchLogsExports:
+        - postgresql
+        - upgrade
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-${Environment}-postgres"
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # CloudWatch Alarm for high CPU utilization
+  RDSCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ClusterName}-${Environment}-rds-high-cpu"
+      AlarmDescription: "Alarm when CPU exceeds 80% for 5 minutes"
+      MetricName: CPUUtilization
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref PostgreSQLInstance
+      TreatMissingData: notBreaching
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: ClusterName
+          Value: !Ref ClusterName
+
+  # CloudWatch Alarm for low free storage space
+  RDSStorageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ClusterName}-${Environment}-rds-low-storage"
+      AlarmDescription: "Alarm when free storage space is less than 10% for 5 minutes"
+      MetricName: FreeStorageSpace
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: !Div [!Mul [!Ref "PostgreSQLInstance.AllocatedStorage", 0.1], 1]
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref PostgreSQLInstance
+      TreatMissingData: notBreaching
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: ClusterName
+          Value: !Ref ClusterName
+
+  # CloudWatch Dashboard for RDS
+  RDSDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "${ClusterName}-${Environment}-rds-dashboard"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", "${PostgreSQLInstance}" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "CPU Utilization",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/RDS", "FreeStorageSpace", "DBInstanceIdentifier", "${PostgreSQLInstance}" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Free Storage Space",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/RDS", "DatabaseConnections", "DBInstanceIdentifier", "${PostgreSQLInstance}" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Database Connections",
+                "period": 300
+              }
+            },
+            {
+              "type": "log",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "query": "SOURCE '/aws/rds/instance/${ClusterName}-${Environment}-postgres' | fields @timestamp, @message\n| sort @timestamp desc\n| limit 20",
+                "region": "${AWS::Region}",
+                "title": "RDS Logs",
+                "view": "table"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  DBInstanceIdentifier:
+    Description: "The identifier for the RDS instance"
+    Value: !Ref PostgreSQLInstance
+    Export:
+      Name: !Sub "${AWS::StackName}-DBInstanceIdentifier"
+      
+  DBInstanceEndpoint:
+    Description: "The connection endpoint for the PostgreSQL instance"
+    Value: !GetAtt PostgreSQLInstance.Endpoint.Address
+    Export:
+      Name: !Sub "${AWS::StackName}-DBEndpoint"
+  
+  DBInstancePort:
+    Description: "The port for the PostgreSQL instance"
+    Value: !GetAtt PostgreSQLInstance.Endpoint.Port
+    Export:
+      Name: !Sub "${AWS::StackName}-DBPort"
+
+  DBName:
+    Description: "The name of the database"
+    Value: "appdb"
+    Export:
+      Name: !Sub "${AWS::StackName}-DBName"
+  
+  DBUsername:
+    Description: "The master username for the database"
+    Value: "postgres"
+    Export:
+      Name: !Sub "${AWS::StackName}-DBUsername"
+  
+  DBPasswordSecretARN:
+    Description: "ARN of the secret containing the database password"
+    Value: !Ref DBPasswordSecret
+    Export:
+      Name: !Sub "${AWS::StackName}-DBPasswordSecretARN"
+  
+  DBPasswordParameterName:
+    Description: "Name of the SSM parameter containing the database password"
+    Value: !Sub "/database/${ClusterName}/${Environment}/password"
+    Export:
+      Name: !Sub "${AWS::StackName}-DBPasswordParameterName"
+  
+  RDSLogGroupName:
+    Description: "Name of the CloudWatch Log Group for RDS logs"
+    Value: !Ref RDSLogGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-RDSLogGroupName"
+  
+  RDSDashboardName:
+    Description: "Name of the CloudWatch Dashboard for RDS monitoring"
+    Value: !Ref RDSDashboard
+    Export:
+      Name: !Sub "${AWS::StackName}-RDSDashboardName"

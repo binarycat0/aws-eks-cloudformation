@@ -1,0 +1,309 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: EKS Cluster with Managed Node Group
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment type for resource tagging
+  
+  ClusterName:
+    Type: String
+    Default: eks-cluster
+    Description: Name of the EKS cluster
+
+Resources:
+  # CloudWatch Log Group for EKS Control Plane Logging
+  EKSClusterLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/eks/${ClusterName}/cluster"
+      RetentionInDays: 7
+      Tags:
+        Environment: !Ref Environment
+        ManagedBy: CloudFormation
+
+  EKSCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: !Sub "${ClusterName}-${Environment}"
+      RoleArn: !ImportValue "MyStack-EKSClusterRoleArn"
+      ResourcesVpcConfig:
+        SecurityGroupIds:
+          - !ImportValue "MyStack-EKSSecurityGroupId"
+        SubnetIds:
+          - !ImportValue "MyStack-PublicSubnet1"
+          - !ImportValue "MyStack-PublicSubnet2"
+          - !ImportValue "MyStack-PrivateSubnet1"
+          - !ImportValue "MyStack-PrivateSubnet2"
+      Logging:
+        ClusterLogging:
+          EnabledTypes:
+            - Type: api
+            - Type: audit
+            - Type: authenticator
+            - Type: controllerManager
+            - Type: scheduler
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-${Environment}"
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Update OIDC Provider ID in SSM Parameter Store
+  UpdateOIDCProviderIdCustomResource:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !ImportValue "MyStack-OIDCProviderUpdaterLambdaArn"
+      ClusterName: !GetAtt EKSCluster.Name
+      ParameterName: "/eks/oidc-provider-id"
+    DependsOn: EKSCluster
+
+  NodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EKSCluster
+      NodeRole: !ImportValue "MyStack-EKSNodeRoleArn"
+      Subnets:
+        - !ImportValue "MyStack-PrivateSubnet1"
+        - !ImportValue "MyStack-PrivateSubnet2"
+      ScalingConfig:
+        DesiredSize: 2
+        MaxSize: 3
+        MinSize: 1
+      InstanceTypes:
+        - t3.medium
+      Tags:
+        Environment: !Ref Environment
+        ManagedBy: CloudFormation
+        Name: !Sub "${ClusterName}-${Environment}-nodegroup"
+      # Add CloudWatch Agent configuration for node monitoring
+      LaunchTemplate:
+        Id: !Ref NodeLaunchTemplate
+        Version: !GetAtt NodeLaunchTemplate.LatestVersionNumber
+
+  # Launch template for node group with CloudWatch agent
+  NodeLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "${ClusterName}-${Environment}-node-lt"
+      VersionDescription: Initial version
+      TagSpecifications:
+        - ResourceType: launch-template
+          Tags:
+            - Key: Name
+              Value: !Sub "${ClusterName}-${Environment}-node-lt"
+            - Key: Environment
+              Value: !Ref Environment
+            - Key: ManagedBy
+              Value: CloudFormation
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -o xtrace
+          
+          # Install CloudWatch agent
+          yum install -y amazon-cloudwatch-agent
+          
+          # Create CloudWatch agent configuration
+          cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'EOF'
+          {
+            "agent": {
+              "metrics_collection_interval": 60,
+              "run_as_user": "root"
+            },
+            "logs": {
+              "logs_collected": {
+                "files": {
+                  "collect_list": [
+                    {
+                      "file_path": "/var/log/messages",
+                      "log_group_name": "/aws/eks/${ClusterName}/nodes",
+                      "log_stream_name": "{instance_id}/messages"
+                    },
+                    {
+                      "file_path": "/var/log/containers/*.log",
+                      "log_group_name": "/aws/eks/${ClusterName}/containers",
+                      "log_stream_name": "{instance_id}/{container_name}"
+                    }
+                  ]
+                }
+              }
+            },
+            "metrics": {
+              "namespace": "EKS/NodeMetrics",
+              "metrics_collected": {
+                "cpu": {
+                  "measurement": [
+                    "cpu_usage_idle",
+                    "cpu_usage_iowait",
+                    "cpu_usage_user",
+                    "cpu_usage_system"
+                  ],
+                  "metrics_collection_interval": 60,
+                  "totalcpu": false
+                },
+                "disk": {
+                  "measurement": [
+                    "used_percent",
+                    "inodes_free"
+                  ],
+                  "metrics_collection_interval": 60,
+                  "resources": [
+                    "*"
+                  ]
+                },
+                "diskio": {
+                  "measurement": [
+                    "io_time"
+                  ],
+                  "metrics_collection_interval": 60,
+                  "resources": [
+                    "*"
+                  ]
+                },
+                "mem": {
+                  "measurement": [
+                    "mem_used_percent"
+                  ],
+                  "metrics_collection_interval": 60
+                },
+                "swap": {
+                  "measurement": [
+                    "swap_used_percent"
+                  ],
+                  "metrics_collection_interval": 60
+                }
+              }
+            }
+          }
+          EOF
+          
+          # Start CloudWatch agent
+          systemctl enable amazon-cloudwatch-agent
+          systemctl start amazon-cloudwatch-agent
+
+  # CloudWatch Dashboard for EKS Cluster
+  EKSClusterDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "${ClusterName}-${Environment}-dashboard"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "EKS/NodeMetrics", "mem_used_percent", "InstanceId", "*", "AutoScalingGroupName", "*" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Memory Usage",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "EKS/NodeMetrics", "cpu_usage_system", "InstanceId", "*", "AutoScalingGroupName", "*" ],
+                  [ ".", "cpu_usage_user", ".", "*", ".", "*" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "CPU Usage",
+                "period": 300
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "EKS/NodeMetrics", "disk_used_percent", "InstanceId", "*", "AutoScalingGroupName", "*", "device", "*", "fstype", "*", "path", "/" ]
+                ],
+                "view": "timeSeries",
+                "stacked": false,
+                "region": "${AWS::Region}",
+                "title": "Disk Usage",
+                "period": 300
+              }
+            },
+            {
+              "type": "log",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "query": "SOURCE '/aws/eks/${ClusterName}/cluster' | fields @timestamp, @message\n| sort @timestamp desc\n| limit 20",
+                "region": "${AWS::Region}",
+                "title": "EKS Control Plane Logs",
+                "view": "table"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  ClusterName:
+    Description: Name of the EKS cluster
+    Value: !GetAtt EKSCluster.Name
+    Export:
+      Name: "ClusterName"
+  
+  ClusterArn:
+    Description: ARN of the EKS cluster
+    Value: !GetAtt EKSCluster.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-ClusterArn"
+  
+  ClusterEndpoint:
+    Description: Endpoint for the EKS cluster API server
+    Value: !GetAtt EKSCluster.Endpoint
+    Export:
+      Name: !Sub "${AWS::StackName}-ClusterEndpoint"
+  
+  ClusterSecurityGroupId:
+    Description: Security group ID for the cluster control plane communication with nodes
+    Value: !GetAtt EKSCluster.ClusterSecurityGroupId
+    Export:
+      Name: !Sub "${AWS::StackName}-ClusterSecurityGroupId"
+  
+  OIDCIssuerURL:
+    Description: The URL of the OIDC provider for the EKS cluster
+    Value: !GetAtt EKSCluster.OpenIdConnectIssuerUrl
+    Export:
+      Name: !Sub "${AWS::StackName}-OIDCIssuerURL"
+  
+  EKSClusterLogGroupName:
+    Description: Name of the CloudWatch Log Group for EKS cluster logs
+    Value: !Ref EKSClusterLogGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-EKSClusterLogGroupName"
+  
+  EKSClusterDashboardName:
+    Description: Name of the CloudWatch Dashboard for EKS cluster monitoring
+    Value: !Ref EKSClusterDashboard
+    Export:
+      Name: !Sub "${AWS::StackName}-EKSClusterDashboardName"

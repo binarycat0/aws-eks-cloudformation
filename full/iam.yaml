@@ -1,0 +1,362 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "IAM Roles for EKS Cluster with RDS and ClickHouse Access"
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment type for resource tagging
+  
+  ClusterName:
+    Type: String
+    Default: eks-cluster
+    Description: Name of the EKS cluster
+
+Resources:
+  # EKS Cluster Role - for the EKS control plane
+  EKSClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: eks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-eks-cluster-role"
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # EKS Node Role - for the EC2 instances in the node group
+  EKSNodeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-eks-node-role"
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Pod Execution Role - for IRSA (IAM Roles for Service Accounts)
+  EKSPodExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub "arn:aws:iam::${AWS::AccountId}:oidc-provider/oidc.eks.${AWS::Region}.amazonaws.com/id/${EKSOIDCProviderID}"
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                !Sub "oidc.eks.${AWS::Region}.amazonaws.com/id/${EKSOIDCProviderID}:sub": "system:serviceaccount:default:rds-access-sa"
+                !Sub "oidc.eks.${AWS::Region}.amazonaws.com/id/${EKSOIDCProviderID}:aud": "sts.amazonaws.com"
+      Path: "/"
+      Policies:
+        - PolicyName: RDSAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - rds:DescribeDBInstances
+                  - rds:DescribeDBClusters
+                  - rds:DescribeDBClusterEndpoints
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - rds-db:connect
+                Resource: !Sub "arn:aws:rds-db:${AWS::Region}:${AWS::AccountId}:dbuser:*/*"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-pod-execution-role"
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Parameter for OIDC Provider ID (to be filled after EKS cluster creation)
+  EKSOIDCProviderID:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: "/eks/oidc-provider-id"
+      Type: String
+      Value: "placeholder-to-be-updated"
+      Description: "OIDC Provider ID for the EKS cluster (update after cluster creation)"
+      Tags:
+        Environment: !Ref Environment
+        ManagedBy: CloudFormation
+        ClusterName: !Ref ClusterName
+
+  # Secret Manager Access Policy for retrieving RDS credentials
+  SecretManagerAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: "Policy to allow access to Secrets Manager for RDS credentials"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+              - secretsmanager:DescribeSecret
+            Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:rds-*"
+      Tags:
+        Name: !Sub "${ClusterName}-secret-manager-access-policy"
+        Environment: !Ref Environment
+        ManagedBy: CloudFormation
+
+  # Attach Secret Manager Access Policy to Pod Execution Role
+  AttachSecretManagerPolicy:
+    Type: AWS::IAM::PolicyAttachment
+    Properties:
+      PolicyArn: !Ref SecretManagerAccessPolicy
+      Roles:
+        - !Ref EKSPodExecutionRole
+
+  # ClickHouse Instance Role - for EC2 instance to access SSM and Secrets Manager
+  ClickHouseInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Policies:
+        - PolicyName: ClickHouseSecretsAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:clickhouse-*"
+              - Effect: Allow
+                Action:
+                  - ec2:CreateTags
+                Resource: "*"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-clickhouse-role"
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Instance Profile for the ClickHouse EC2 instance
+  ClickHouseInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref ClickHouseInstanceRole
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-clickhouse-instance-profile"
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Lambda function to update OIDC Provider ID after EKS cluster creation
+  OIDCProviderUpdaterLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: EKSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - eks:DescribeCluster
+                Resource: !Sub "arn:aws:eks:${AWS::Region}:${AWS::AccountId}:cluster/*"
+              - Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/eks/oidc-provider-id"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-oidc-updater-role"
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  OIDCProviderUpdaterLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt OIDCProviderUpdaterLambdaRole.Arn
+      Runtime: python3.9
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import os
+          import logging
+          
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          
+          def handler(event, context):
+              logger.info('Received event: %s', event)
+              
+              # Initialize response data
+              response_data = {}
+              
+              try:
+                  if event['RequestType'] == 'Delete':
+                      logger.info('Delete request - nothing to do')
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
+                      return
+                  
+                  # Get the cluster name from the event
+                  cluster_name = event['ResourceProperties']['ClusterName']
+                  parameter_name = event['ResourceProperties']['ParameterName']
+                  
+                  # Get the OIDC provider URL from the EKS cluster
+                  eks_client = boto3.client('eks')
+                  response = eks_client.describe_cluster(name=cluster_name)
+                  
+                  oidc_url = response['cluster']['identity']['oidc']['issuer']
+                  # Extract the OIDC provider ID from the URL
+                  oidc_provider_id = oidc_url.split('/')[-1]
+                  
+                  logger.info(f'OIDC Provider ID: {oidc_provider_id}')
+                  
+                  # Update the SSM parameter with the OIDC provider ID
+                  ssm_client = boto3.client('ssm')
+                  ssm_client.put_parameter(
+                      Name=parameter_name,
+                      Value=oidc_provider_id,
+                      Type='String',
+                      Overwrite=True
+                  )
+                  
+                  response_data['OIDCProviderID'] = oidc_provider_id
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
+                  
+              except Exception as e:
+                  logger.error('Error: %s', str(e))
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-oidc-updater-lambda"
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # CloudWatch Log Group for Lambda function
+  OIDCProviderUpdaterLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${OIDCProviderUpdaterLambda}"
+      RetentionInDays: 7
+      Tags:
+        Environment: !Ref Environment
+        ManagedBy: CloudFormation
+        ClusterName: !Ref ClusterName
+
+Outputs:
+  EKSClusterRoleArn:
+    Description: ARN of the EKS Cluster IAM Role
+    Value: !GetAtt EKSClusterRole.Arn
+    Export:
+      Name: "MyStack-EKSClusterRoleArn"
+  
+  EKSNodeRoleArn:
+    Description: ARN of the EKS Node IAM Role
+    Value: !GetAtt EKSNodeRole.Arn
+    Export:
+      Name: "MyStack-EKSNodeRoleArn"
+  
+  EKSClusterRoleName:
+    Description: Name of the EKS Cluster IAM Role
+    Value: !Ref EKSClusterRole
+    Export:
+      Name: "MyStack-EKSClusterRoleName"
+  
+  EKSNodeRoleName:
+    Description: Name of the EKS Node IAM Role
+    Value: !Ref EKSNodeRole
+    Export:
+      Name: "MyStack-EKSNodeRoleName"
+  
+  EKSPodExecutionRoleArn:
+    Description: ARN of the EKS Pod Execution IAM Role
+    Value: !GetAtt EKSPodExecutionRole.Arn
+    Export:
+      Name: "MyStack-EKSPodExecutionRoleArn"
+  
+  SecretManagerAccessPolicyArn:
+    Description: ARN of the Secret Manager Access Policy
+    Value: !Ref SecretManagerAccessPolicy
+    Export:
+      Name: "MyStack-SecretManagerAccessPolicyArn"
+  
+  ClickHouseInstanceRoleArn:
+    Description: ARN of the ClickHouse Instance IAM Role
+    Value: !GetAtt ClickHouseInstanceRole.Arn
+    Export:
+      Name: "MyStack-ClickHouseInstanceRoleArn"
+  
+  ClickHouseInstanceProfileArn:
+    Description: ARN of the ClickHouse Instance Profile
+    Value: !GetAtt ClickHouseInstanceProfile.Arn
+    Export:
+      Name: "MyStack-ClickHouseInstanceProfileArn"
+  
+  ClickHouseInstanceProfileName:
+    Description: Name of the ClickHouse Instance Profile
+    Value: !Ref ClickHouseInstanceProfile
+    Export:
+      Name: "MyStack-ClickHouseInstanceProfileName"
+  
+  OIDCProviderUpdaterLambdaArn:
+    Description: ARN of the Lambda function that updates the OIDC Provider ID
+    Value: !GetAtt OIDCProviderUpdaterLambda.Arn
+    Export:
+      Name: "MyStack-OIDCProviderUpdaterLambdaArn"
