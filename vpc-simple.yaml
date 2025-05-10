@@ -1,0 +1,306 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Simplified VPC for EKS Demo Environment with ClickHouse"
+
+Parameters:
+  ClusterName:
+    Type: String
+    Default: demo-eks
+    Description: Name of the EKS cluster for resource tagging
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-vpc"
+        - Key: Environment
+          Value: demo
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Public Subnet - for resources that need internet access
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-public-subnet"
+        - Key: Environment
+          Value: demo
+        - Key: kubernetes.io/role/elb
+          Value: "1"
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Private Subnet - for RDS and other resources that don't need direct internet access
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-private-subnet"
+        - Key: Environment
+          Value: demo
+        - Key: kubernetes.io/role/internal-elb
+          Value: "1"
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Internet Gateway for public subnets
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-igw"
+        - Key: Environment
+          Value: demo
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # NAT Gateway for private subnet internet access
+  NatGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-nat-eip"
+        - Key: Environment
+          Value: demo
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-nat-gateway"
+        - Key: Environment
+          Value: demo
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Route Tables
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-public-route-table"
+        - Key: Environment
+          Value: demo
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-private-route-table"
+        - Key: Environment
+          Value: demo
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Routes
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  # Route Table Associations
+  PublicSubnetRouteTableAssociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateSubnetRouteTableAssociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  # Security Groups
+  PublicSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: Public Security Group for ALB and public-facing resources
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: Allow HTTP traffic from internet
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: Allow HTTPS traffic from internet
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: Allow SSH from internet (for demo only)
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-public-sg"
+        - Key: Environment
+          Value: demo
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  PrivateSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: Private Security Group for RDS and internal resources
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref PublicSecurityGroup
+          Description: Allow PostgreSQL access from public security group
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-private-sg"
+        - Key: Environment
+          Value: demo
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # EKS Security Group
+  EKSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EKS cluster control plane communication with worker nodes
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: Allow HTTPS traffic to EKS API server
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-eks-sg"
+        - Key: Environment
+          Value: demo
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # ClickHouse Security Group
+  ClickHouseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ClickHouse server with EKS access
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref EKSSecurityGroup
+          Description: SSH access from EKS nodes
+        - IpProtocol: tcp
+          FromPort: 8123
+          ToPort: 8123
+          SourceSecurityGroupId: !Ref EKSSecurityGroup
+          Description: ClickHouse HTTP interface from EKS
+        - IpProtocol: tcp
+          FromPort: 9000
+          ToPort: 9000
+          SourceSecurityGroupId: !Ref EKSSecurityGroup
+          Description: ClickHouse client interface from EKS
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-clickhouse-sg"
+        - Key: Environment
+          Value: demo
+        - Key: ManagedBy
+          Value: CloudFormation
+
+Outputs:
+  VpcId:
+    Description: The ID of the VPC
+    Value: !Ref VPC
+    Export:
+      Name: !Sub "${ClusterName}-VpcId"
+  
+  ClusterName:
+    Description: Name of the EKS cluster
+    Value: !Ref ClusterName
+    Export:
+      Name: !Sub "${ClusterName}-ClusterName"
+  
+  PublicSubnet1Id:
+    Description: ID of the public subnet
+    Value: !Ref PublicSubnet1
+    Export:
+      Name: !Sub "${ClusterName}-PublicSubnet1"
+  
+  PrivateSubnet1Id:
+    Description: ID of the private subnet
+    Value: !Ref PrivateSubnet1
+    Export:
+      Name: !Sub "${ClusterName}-PrivateSubnet1"
+  
+  PublicSecurityGroupId:
+    Description: ID of the public security group
+    Value: !Ref PublicSecurityGroup
+    Export:
+      Name: !Sub "${ClusterName}-PublicSecurityGroupId"
+  
+  PrivateSecurityGroupId:
+    Description: ID of the private security group
+    Value: !Ref PrivateSecurityGroup
+    Export:
+      Name: !Sub "${ClusterName}-PrivateSecurityGroupId"
+  
+  EKSSecurityGroupId:
+    Description: ID of the EKS security group
+    Value: !Ref EKSSecurityGroup
+    Export:
+      Name: !Sub "${ClusterName}-EKSSecurityGroupId"
+      
+  ClickHouseSecurityGroupId:
+    Description: ID of the ClickHouse security group
+    Value: !Ref ClickHouseSecurityGroup
+    Export:
+      Name: !Sub "${ClusterName}-ClickHouseSecurityGroupId"

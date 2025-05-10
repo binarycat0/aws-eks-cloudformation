@@ -1,0 +1,154 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Simplified IAM Roles for EKS Demo Environment with ClickHouse"
+
+Parameters:
+  ClusterName:
+    Type: String
+    Default: demo-eks
+    Description: Name of the EKS cluster
+
+Resources:
+  # EKS Cluster Role - for the EKS control plane
+  EKSClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: eks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-eks-cluster-role"
+        - Key: Environment
+          Value: demo
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # EKS Node Role - for the EC2 instances in the node group
+  EKSNodeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-eks-node-role"
+        - Key: Environment
+          Value: demo
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Simple OIDC Provider ID Parameter (no Lambda needed for demo)
+  EKSOIDCProviderID:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: "/eks/oidc-provider-id"
+      Type: String
+      Value: "demo-placeholder-update-manually-if-needed"
+      Description: "OIDC Provider ID for the EKS cluster (update manually after cluster creation if needed)"
+      Tags:
+        Environment: demo
+        ManagedBy: CloudFormation
+        ClusterName: !Ref ClusterName
+
+  # ClickHouse Instance Role - for EC2 instance to access SSM and Secrets Manager
+  ClickHouseInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: ClickHouseSecretsAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:clickhouse-*"
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-clickhouse-role"
+        - Key: Environment
+          Value: demo
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Instance Profile for the ClickHouse EC2 instance
+  ClickHouseInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref ClickHouseInstanceRole
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-clickhouse-instance-profile"
+        - Key: Environment
+          Value: demo
+        - Key: ManagedBy
+          Value: CloudFormation
+
+Outputs:
+  EKSClusterRoleArn:
+    Description: ARN of the EKS Cluster IAM Role
+    Value: !GetAtt EKSClusterRole.Arn
+    Export:
+      Name: !Sub "${ClusterName}-EKSClusterRoleArn"
+  
+  EKSNodeRoleArn:
+    Description: ARN of the EKS Node IAM Role
+    Value: !GetAtt EKSNodeRole.Arn
+    Export:
+      Name: !Sub "${ClusterName}-EKSNodeRoleArn"
+  
+  EKSClusterRoleName:
+    Description: Name of the EKS Cluster IAM Role
+    Value: !Ref EKSClusterRole
+    Export:
+      Name: !Sub "${ClusterName}-EKSClusterRoleName"
+  
+  EKSNodeRoleName:
+    Description: Name of the EKS Node IAM Role
+    Value: !Ref EKSNodeRole
+    Export:
+      Name: !Sub "${ClusterName}-EKSNodeRoleName"
+      
+  ClickHouseInstanceRoleArn:
+    Description: ARN of the ClickHouse Instance IAM Role
+    Value: !GetAtt ClickHouseInstanceRole.Arn
+    Export:
+      Name: !Sub "${ClusterName}-ClickHouseInstanceRoleArn"
+  
+  ClickHouseInstanceProfileArn:
+    Description: ARN of the ClickHouse Instance Profile
+    Value: !GetAtt ClickHouseInstanceProfile.Arn
+    Export:
+      Name: !Sub "${ClusterName}-ClickHouseInstanceProfileArn"
+  
+  ClickHouseInstanceProfileName:
+    Description: Name of the ClickHouse Instance Profile
+    Value: !Ref ClickHouseInstanceProfile
+    Export:
+      Name: !Sub "${ClusterName}-ClickHouseInstanceProfileName"

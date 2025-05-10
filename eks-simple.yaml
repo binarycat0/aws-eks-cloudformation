@@ -1,0 +1,77 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Simplified EKS Cluster for Demo Environment
+
+Parameters:
+  ClusterName:
+    Type: String
+    Default: demo-eks
+    Description: Name of the EKS cluster
+
+Resources:
+  EKSCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: !Ref ClusterName
+      RoleArn: !ImportValue !Sub "${ClusterName}-EKSClusterRoleArn"
+      ResourcesVpcConfig:
+        SecurityGroupIds:
+          - !ImportValue !Sub "${ClusterName}-EKSSecurityGroupId"
+        SubnetIds:
+          - !ImportValue !Sub "${ClusterName}-PublicSubnet1"
+          - !ImportValue !Sub "${ClusterName}-PrivateSubnet1"
+      Tags:
+        - Key: Name
+          Value: !Ref ClusterName
+        - Key: Environment
+          Value: demo
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  NodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EKSCluster
+      NodeRole: !ImportValue !Sub "${ClusterName}-EKSNodeRoleArn"
+      Subnets:
+        - !ImportValue !Sub "${ClusterName}-PrivateSubnet1"
+      ScalingConfig:
+        DesiredSize: 1
+        MaxSize: 2
+        MinSize: 1
+      InstanceTypes:
+        - t3.medium
+      Tags:
+        Environment: demo
+        ManagedBy: CloudFormation
+        Name: !Sub "${ClusterName}-nodegroup"
+
+Outputs:
+  ClusterName:
+    Description: Name of the EKS cluster
+    Value: !GetAtt EKSCluster.Name
+    Export:
+      Name: !Sub "${ClusterName}-EKSClusterName"
+  
+  ClusterArn:
+    Description: ARN of the EKS cluster
+    Value: !GetAtt EKSCluster.Arn
+    Export:
+      Name: !Sub "${ClusterName}-ClusterArn"
+  
+  ClusterEndpoint:
+    Description: Endpoint for the EKS cluster API server
+    Value: !GetAtt EKSCluster.Endpoint
+    Export:
+      Name: !Sub "${ClusterName}-ClusterEndpoint"
+  
+  ClusterSecurityGroupId:
+    Description: Security group ID for the cluster control plane communication with nodes
+    Value: !GetAtt EKSCluster.ClusterSecurityGroupId
+    Export:
+      Name: !Sub "${ClusterName}-ClusterSecurityGroupId"
+  
+  OIDCIssuerURL:
+    Description: The URL of the OIDC provider for the EKS cluster
+    Value: !GetAtt EKSCluster.OpenIdConnectIssuerUrl
+    Export:
+      Name: !Sub "${ClusterName}-OIDCIssuerURL"
