@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "VPC with public and private subnets in different AZs for RDS"
+Description: "VPC with public and private subnets in different AZs for RDS and ClickHouse"
 
 Resources:
   VPC:
@@ -180,6 +180,32 @@ Resources:
         - Key: Name
           Value: Private Security Group
 
+  # ClickHouse Security Group
+  ClickHouseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ClickHouse server with EKS access
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref PublicSecurityGroup
+          Description: SSH access from bastion hosts
+        - IpProtocol: tcp
+          FromPort: 8123
+          ToPort: 8123
+          SourceSecurityGroupId: !Ref PublicSecurityGroup
+          Description: ClickHouse HTTP interface from EKS
+        - IpProtocol: tcp
+          FromPort: 9000
+          ToPort: 9000
+          SourceSecurityGroupId: !Ref PublicSecurityGroup
+          Description: ClickHouse client interface from EKS
+      Tags:
+        - Key: Name
+          Value: ClickHouse Security Group
+
 Outputs:
   VpcId:
     Value: !Ref VPC
@@ -209,3 +235,7 @@ Outputs:
     Value: !Ref PrivateSecurityGroup
     Export:
       Name: "MyStack-PrivateSecurityGroupId"
+  ClickHouseSecurityGroupId:
+    Value: !Ref ClickHouseSecurityGroup
+    Export:
+      Name: "MyStack-ClickHouseSecurityGroupId"

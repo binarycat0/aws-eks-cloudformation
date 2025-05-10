@@ -1,17 +1,12 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: EKS Cluster with Managed Node Group
 
-Parameters:
-  ClusterName:
-    Type: String
-    Default: my-eks-cluster
-
 Resources:
 
   EKSCluster:
     Type: AWS::EKS::Cluster
     Properties:
-      Name: !Ref ClusterName
+      Name: !Join ['-', ['eks-cluster', !Ref 'AWS::StackName', !Ref 'AWS::Region']]
       RoleArn: !ImportValue "MyStack-EKSClusterRoleArn"
       ResourcesVpcConfig:
         SecurityGroupIds:
@@ -25,7 +20,7 @@ Resources:
   NodeGroup:
     Type: AWS::EKS::Nodegroup
     Properties:
-      ClusterName: !Ref ClusterName
+      ClusterName: !Ref EKSCluster
       NodeRole: !ImportValue "MyStack-EKSNodeRoleArn"
       Subnets:
         - !ImportValue "MyStack-PrivateSubnet1"
@@ -39,6 +34,6 @@ Resources:
 
 Outputs:
   ClusterName:
-    Value: !Ref ClusterName
+    Value: !GetAtt EKSCluster.Name
   ClusterArn:
     Value: !GetAtt EKSCluster.Arn
