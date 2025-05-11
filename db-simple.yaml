@@ -15,10 +15,10 @@ Resources:
       Name: !Sub "${ClusterName}-demo-db-password"
       Description: "Password for RDS PostgreSQL instance"
       GenerateSecretString:
-        SecretStringTemplate: '{\"username\": \"postgres\"}'
+        SecretStringTemplate: '{"username": "postgres"}'
         GenerateStringKey: "password"
         PasswordLength: 16
-        ExcludeCharacters: '\"@/\\'
+        ExcludeCharacters: '"@/\\'
       Tags:
         - Key: Name
           Value: !Sub "${ClusterName}-demo-db-password"
@@ -33,14 +33,14 @@ Resources:
     Properties:
       Name: !Sub "/database/${ClusterName}/demo/password"
       Description: "Password for RDS PostgreSQL instance"
-      Type: "SecureString"
+      Type: "String"
       Value: !Join ['', ['{{resolve:secretsmanager:', !Ref DBPasswordSecret, ':SecretString:password}}' ]]
       Tags:
         Environment: demo
         ManagedBy: CloudFormation
         ClusterName: !Ref ClusterName
 
-  # DB Subnet Group using the private subnet from the VPC stack
+  # DB Subnet Group using the private subnets from the VPC stack
   DBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
@@ -49,7 +49,7 @@ Resources:
         - Fn::ImportValue:
             Fn::Sub: "${ClusterName}-PrivateSubnet1"
         - Fn::ImportValue:
-            Fn::Sub: "${ClusterName}-PublicSubnet1"  # Using public subnet as second subnet for demo
+            Fn::Sub: "${ClusterName}-PrivateSubnet2"  # Using both private subnets for proper multi-AZ support
       Tags:
         - Key: Name
           Value: !Sub "${ClusterName}-demo-db-subnet-group"

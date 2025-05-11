@@ -5,11 +5,11 @@ STACK_NAME ?= demo-eks
 
 validate:
 	@echo "Validating CloudFormation templates..."
-	aws --profile $(PROFILE) cloudformation validate-template --template-body file://vpc-simple.yaml
-	aws --profile $(PROFILE) cloudformation validate-template --template-body file://iam-simple.yaml
-	aws --profile $(PROFILE) cloudformation validate-template --template-body file://db-simple.yaml
-	aws --profile $(PROFILE) cloudformation validate-template --template-body file://ch-simple.yaml
-	aws --profile $(PROFILE) cloudformation validate-template --template-body file://eks-simple.yaml
+	aws --profile $(PROFILE) cloudformation validate-template --template-body file://vpc-simple.yaml --output json > /dev/null
+	aws --profile $(PROFILE) cloudformation validate-template --template-body file://iam-simple.yaml --output json > /dev/null
+	aws --profile $(PROFILE) cloudformation validate-template --template-body file://db-simple.yaml --output json > /dev/null
+	aws --profile $(PROFILE) cloudformation validate-template --template-body file://ch-simple.yaml --output json > /dev/null
+	aws --profile $(PROFILE) cloudformation validate-template --template-body file://eks-simple.yaml --output json > /dev/null
 	@echo "All templates are valid!"
 
 deploy-demo: validate

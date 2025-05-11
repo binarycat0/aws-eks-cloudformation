@@ -32,7 +32,24 @@ Resources:
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: !Sub "${ClusterName}-public-subnet"
+          Value: !Sub "${ClusterName}-public-subnet-1"
+        - Key: Environment
+          Value: demo
+        - Key: kubernetes.io/role/elb
+          Value: "1"
+        - Key: ManagedBy
+          Value: CloudFormation
+          
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-public-subnet-2"
         - Key: Environment
           Value: demo
         - Key: kubernetes.io/role/elb
@@ -40,7 +57,7 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # Private Subnet - for RDS and other resources that don't need direct internet access
+  # Private Subnets - for RDS and other resources that don't need direct internet access
   PrivateSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
@@ -50,7 +67,24 @@ Resources:
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
-          Value: !Sub "${ClusterName}-private-subnet"
+          Value: !Sub "${ClusterName}-private-subnet-1"
+        - Key: Environment
+          Value: demo
+        - Key: kubernetes.io/role/internal-elb
+          Value: "1"
+        - Key: ManagedBy
+          Value: CloudFormation
+          
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.4.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-private-subnet-2"
         - Key: Environment
           Value: demo
         - Key: kubernetes.io/role/internal-elb
@@ -150,11 +184,23 @@ Resources:
     Properties:
       SubnetId: !Ref PublicSubnet1
       RouteTableId: !Ref PublicRouteTable
+      
+  PublicSubnetRouteTableAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
 
   PrivateSubnetRouteTableAssociation1:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+      
+  PrivateSubnetRouteTableAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
       RouteTableId: !Ref PrivateRouteTable
 
   # Security Groups
@@ -270,16 +316,28 @@ Outputs:
       Name: !Sub "${ClusterName}-ClusterName"
   
   PublicSubnet1Id:
-    Description: ID of the public subnet
+    Description: ID of the first public subnet
     Value: !Ref PublicSubnet1
     Export:
       Name: !Sub "${ClusterName}-PublicSubnet1"
+      
+  PublicSubnet2Id:
+    Description: ID of the second public subnet
+    Value: !Ref PublicSubnet2
+    Export:
+      Name: !Sub "${ClusterName}-PublicSubnet2"
   
   PrivateSubnet1Id:
-    Description: ID of the private subnet
+    Description: ID of the first private subnet
     Value: !Ref PrivateSubnet1
     Export:
       Name: !Sub "${ClusterName}-PrivateSubnet1"
+      
+  PrivateSubnet2Id:
+    Description: ID of the second private subnet
+    Value: !Ref PrivateSubnet2
+    Export:
+      Name: !Sub "${ClusterName}-PrivateSubnet2"
   
   PublicSecurityGroupId:
     Description: ID of the public security group

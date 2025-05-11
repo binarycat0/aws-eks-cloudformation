@@ -102,13 +102,7 @@ Resources:
     Properties:
       Roles:
         - !Ref ClickHouseInstanceRole
-      Tags:
-        - Key: Name
-          Value: !Sub "${ClusterName}-clickhouse-instance-profile"
-        - Key: Environment
-          Value: demo
-        - Key: ManagedBy
-          Value: CloudFormation
+      # Note: AWS::IAM::InstanceProfile doesn't support Tags property
 
 Outputs:
   EKSClusterRoleArn:
